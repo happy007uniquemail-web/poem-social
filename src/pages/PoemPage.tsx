@@ -4,6 +4,9 @@ import { supabase } from '../lib/supabase'
 import { useAuth } from '../lib/AuthContext'
 import type { Poem } from '../lib/types'
 import LikeButton from '../components/LikeButton'
+import RepostButton from '../components/RepostButton'
+import Comments from '../components/Comments'
+import { TagList } from '../components/TagsInput'
 
 function formatDate(iso: string) {
   return new Date(iso).toLocaleDateString(undefined, {
@@ -28,21 +31,31 @@ export default function PoemPage() {
     setLoading(true)
     const { data, error } = await supabase
       .from('poems')
-      .select('*, author:profiles!poems_author_id_fkey(*)')
+      .select(
+        '*, author:profiles!poems_author_id_fkey(*), tags:poem_tags(tag:tags(*))'
+      )
       .eq('id', id)
       .maybeSingle()
 
-    if (error) {
+    if (error || !data) {
       setNotFound(true)
       setLoading(false)
       return
     }
-    if (!data) {
-      // RLS hides poems the viewer can't see
-      setNotFound(true)
-    } else {
-      setPoem(data as unknown as Poem)
+
+    // Flatten the nested tags join: [{ tag: {...} }] -> [ {...} ]
+    const row = data as unknown as Omit<Poem, 'tags'> & {
+      tags: { tag: { id: string; name: string } }[]
     }
+    const flat = {
+      ...row,
+      tags: (row.tags ?? [])
+        .map((t) => t.tag)
+        .filter(Boolean),
+    } as unknown as Poem
+
+    setPoem(flat)
+    setNotFound(false)
     setLoading(false)
   }, [id])
 
@@ -67,9 +80,7 @@ export default function PoemPage() {
     return (
       <div className="poem-page">
         <h1>Poem not found</h1>
-        <p className="muted">
-          It may have been deleted, or it’s private.
-        </p>
+        <p className="muted">It may have been deleted, or it’s private.</p>
         <Link to="/" className="btn btn-ghost">
           Back to feed
         </Link>
@@ -97,6 +108,8 @@ export default function PoemPage() {
         </Link>
       )}
 
+      <TagList tags={poem.tags} />
+
       <pre className="poem-body">{poem.body}</pre>
 
       <div className="poem-page-foot">
@@ -105,11 +118,18 @@ export default function PoemPage() {
           {poem.updated_at !== poem.created_at &&
             ` · edited ${formatDate(poem.updated_at)}`}
         </span>
-        <LikeButton
-          poemId={poem.id}
-          likeCount={poem.like_count}
-          onChange={load}
-        />
+        <div className="action-row">
+          <LikeButton
+            poemId={poem.id}
+            likeCount={poem.like_count}
+            onChange={load}
+          />
+          <RepostButton
+            poemId={poem.id}
+            repostCount={poem.repost_count}
+            onChange={load}
+          />
+        </div>
       </div>
 
       {isOwner && (
@@ -126,6 +146,8 @@ export default function PoemPage() {
           </button>
         </div>
       )}
+
+      <Comments poemId={poem.id} />
     </article>
   )
 }

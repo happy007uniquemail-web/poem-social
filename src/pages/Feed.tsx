@@ -1,13 +1,30 @@
 import { useCallback, useEffect, useState } from 'react'
 import { supabase } from '../lib/supabase'
+import { useAuth } from '../lib/AuthContext'
 import type { Poem } from '../lib/types'
 import PoemCard from '../components/PoemCard'
 
 const PAGE_SIZE = 10
 
-type SortMode = 'new' | 'liked'
+type SortMode = 'new' | 'liked' | 'following'
+
+// Raw PostgREST shape: the nested tag join resolves to { tag: {...} }[]
+type RawPoem = Omit<Poem, 'tags'> & {
+  tags: { tag: { id: string; name: string } }[]
+}
+
+// Flatten the nested tag join used across the feed queries
+function flatten(rows: unknown[]): Poem[] {
+  return (rows as RawPoem[]).map((r) => ({
+    ...r,
+    tags: (r.tags ?? []).map((t) => t.tag).filter(Boolean),
+  })) as Poem[]
+}
+
+const TAG_SELECT = '*, author:profiles!poems_author_id_fkey(*), tags:poem_tags(tag:tags(*))'
 
 export default function Feed() {
+  const { session } = useAuth()
   const [sort, setSort] = useState<SortMode>('new')
   const [page, setPage] = useState(0)
   const [poems, setPoems] = useState<Poem[]>([])
@@ -21,11 +38,55 @@ export default function Feed() {
       setError(null)
 
       const from = pageNum * PAGE_SIZE
-      const to = from + PAGE_SIZE // fetch one extra to detect more
+      const to = from + PAGE_SIZE // one extra to detect more
+
+      // "Following" needs the list of followed user IDs first
+      if (mode === 'following') {
+        if (!session) {
+          setPoems([])
+          setHasMore(false)
+          setLoading(false)
+          return
+        }
+
+        const { data: follows } = await supabase
+          .from('follows')
+          .select('followee_id')
+          .eq('follower_id', session.user.id)
+
+        const ids = (follows ?? []).map((f) => f.followee_id)
+        if (ids.length === 0) {
+          setPoems([])
+          setHasMore(false)
+          setLoading(false)
+          return
+        }
+
+        const { data, error } = await supabase
+          .from('poems')
+          .select(TAG_SELECT)
+          .in('author_id', ids)
+          .eq('is_public', true)
+          .order('created_at', { ascending: false })
+          .range(from, to)
+
+        if (error) {
+          setError(error.message)
+          setLoading(false)
+          return
+        }
+
+        const rows = data ?? []
+        setHasMore(rows.length > PAGE_SIZE)
+        const pageRows = flatten(rows.slice(0, PAGE_SIZE))
+        setPoems((prev) => (pageNum === 0 ? pageRows : [...prev, ...pageRows]))
+        setLoading(false)
+        return
+      }
 
       let query = supabase
         .from('poems')
-        .select('*, author:profiles!poems_author_id_fkey(*)')
+        .select(TAG_SELECT)
         .eq('is_public', true)
         .range(from, to)
 
@@ -44,16 +105,15 @@ export default function Feed() {
         return
       }
 
-      const rows = (data ?? []) as unknown as Poem[]
+      const rows = data ?? []
       setHasMore(rows.length > PAGE_SIZE)
-      const pageRows = rows.slice(0, PAGE_SIZE)
+      const pageRows = flatten(rows.slice(0, PAGE_SIZE))
       setPoems((prev) => (pageNum === 0 ? pageRows : [...prev, ...pageRows]))
       setLoading(false)
     },
-    []
+    [session]
   )
 
-  // Reload from the top whenever the sort mode changes
   useEffect(() => {
     setPage(0)
     load(sort, 0)
@@ -65,33 +125,38 @@ export default function Feed() {
     load(sort, next)
   }
 
+  const tabs: { key: SortMode; label: string }[] = [
+    { key: 'new', label: 'Newest' },
+    { key: 'liked', label: 'Most liked' },
+    ...(session ? [{ key: 'following' as SortMode, label: 'Following' }] : []),
+  ]
+
   return (
     <div className="feed">
       <div className="feed-head">
         <h1>Poems</h1>
         <div className="tabs" role="tablist">
-          <button
-            role="tab"
-            aria-selected={sort === 'new'}
-            className={`tab${sort === 'new' ? ' active' : ''}`}
-            onClick={() => setSort('new')}
-          >
-            Newest
-          </button>
-          <button
-            role="tab"
-            aria-selected={sort === 'liked'}
-            className={`tab${sort === 'liked' ? ' active' : ''}`}
-            onClick={() => setSort('liked')}
-          >
-            Most liked
-          </button>
+          {tabs.map((t) => (
+            <button
+              key={t.key}
+              role="tab"
+              aria-selected={sort === t.key}
+              className={`tab${sort === t.key ? ' active' : ''}`}
+              onClick={() => setSort(t.key)}
+            >
+              {t.label}
+            </button>
+          ))}
         </div>
       </div>
 
       {error && <p className="error">{error}</p>}
       {!loading && poems.length === 0 && !error && (
-        <p className="muted">No poems yet. Be the first to write one.</p>
+        <p className="muted">
+          {sort === 'following'
+            ? 'Nothing from people you follow yet. Follow some poets to fill this feed.'
+            : 'No poems yet. Be the first to write one.'}
+        </p>
       )}
 
       <div className="poem-list">

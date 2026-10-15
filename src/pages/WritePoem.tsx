@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../lib/AuthContext'
+import TagsInput from '../components/TagsInput'
 
 export default function WritePoem() {
   const { id } = useParams<{ id: string }>()
@@ -12,17 +13,19 @@ export default function WritePoem() {
   const [title, setTitle] = useState('')
   const [body, setBody] = useState('')
   const [isPublic, setIsPublic] = useState(true)
+  const [tags, setTags] = useState<string[]>([])
   const [preview, setPreview] = useState(false)
   const [loading, setLoading] = useState(isEditing)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  // When editing, load the existing poem (RLS restricts to own poems)
   useEffect(() => {
     if (!id) return
     supabase
       .from('poems')
-      .select('title, body, is_public, author_id')
+      .select(
+        'title, body, is_public, author_id, tags:poem_tags(tag:tags(name))'
+      )
       .eq('id', id)
       .maybeSingle()
       .then(({ data, error }) => {
@@ -31,17 +34,58 @@ export default function WritePoem() {
           setError('Could not load that poem.')
           return
         }
-        if (data.author_id !== session?.user.id) {
+        const row = data as unknown as {
+          title: string
+          body: string
+          is_public: boolean
+          author_id: string
+          tags: { tag: { name: string } }[]
+        }
+        if (row.author_id !== session?.user.id) {
           setError('You can only edit your own poems.')
           return
         }
-        setTitle(data.title)
-        setBody(data.body)
-        setIsPublic(data.is_public)
+        setTitle(row.title)
+        setBody(row.body)
+        setIsPublic(row.is_public)
+        setTags((row.tags ?? []).map((t) => t.tag.name).filter(Boolean))
       })
   }, [id, session])
 
   const canSave = title.trim().length > 0 && body.trim().length > 0 && !saving
+
+  // Resolve tag names to IDs, creating any that don't exist yet.
+  const resolveTags = async (poemId: string) => {
+    if (tags.length === 0) return
+
+    const { data: existing } = await supabase
+      .from('tags')
+      .select('id, name')
+      .in('name', tags)
+
+    const found = new Map((existing ?? []).map((t) => [t.name, t.id]))
+    const missing = tags.filter((t) => !found.has(t))
+
+    if (missing.length > 0) {
+      const { data: created, error } = await supabase
+        .from('tags')
+        .insert(missing.map((name) => ({ name })))
+        .select('id, name')
+      if (error) return
+      for (const t of created ?? []) found.set(t.name, t.id)
+    }
+
+    const links = tags
+      .filter((name) => found.has(name))
+      .map((name) => ({ poem_id: poemId, tag_id: found.get(name)! }))
+
+    if (links.length > 0) {
+      await supabase.from('poem_tags').upsert(links, {
+        onConflict: 'poem_id,tag_id',
+        ignoreDuplicates: true,
+      })
+    }
+  }
 
   const save = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -49,41 +93,45 @@ export default function WritePoem() {
     setSaving(true)
     setError(null)
 
+    let poemId: string
+
     if (isEditing && id) {
       const { data, error } = await supabase
         .from('poems')
-        .update({
-          title: title.trim(),
-          body: body,
-          is_public: isPublic,
-        })
+        .update({ title: title.trim(), body, is_public: isPublic })
         .eq('id', id)
         .select('id')
         .single()
-      setSaving(false)
       if (error) {
+        setSaving(false)
         setError(error.message)
         return
       }
-      navigate(`/poem/${data.id}`)
+      poemId = data.id
+      // Clear existing links before re-linking
+      await supabase.from('poem_tags').delete().eq('poem_id', id)
     } else {
       const { data, error } = await supabase
         .from('poems')
         .insert({
           author_id: session.user.id,
           title: title.trim(),
-          body: body,
+          body,
           is_public: isPublic,
         })
         .select('id')
         .single()
-      setSaving(false)
       if (error) {
+        setSaving(false)
         setError(error.message)
         return
       }
-      navigate(`/poem/${data.id}`)
+      poemId = data.id
     }
+
+    await resolveTags(poemId)
+    setSaving(false)
+    navigate(`/poem/${poemId}`)
   }
 
   if (loading) return <p className="muted">Loading…</p>
@@ -130,6 +178,9 @@ export default function WritePoem() {
             rows={14}
           />
         )}
+
+        <label className="tags-label">Tags</label>
+        <TagsInput tags={tags} onChange={setTags} />
 
         <label className="checkbox">
           <input

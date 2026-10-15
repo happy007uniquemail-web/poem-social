@@ -9,6 +9,7 @@ import Feed from './pages/Feed'
 import PoemPage from './pages/PoemPage'
 import WritePoem from './pages/WritePoem'
 import Profile from './pages/Profile'
+import TagPage from './pages/TagPage'
 import MyPoems from './pages/MyPoems'
 import LikedPoems from './pages/LikedPoems'
 import Login from './pages/Login'
@@ -64,6 +65,7 @@ export default function App() {
           element={needsSetup ? <Navigate to="/setup" replace /> : <Feed />}
         />
         <Route path="poem/:id" element={<PoemPage />} />
+        <Route path="tag/:name" element={<TagPage />} />
         <Route path="u/:username" element={<Profile />} />
         <Route
           path="write"
