@@ -15,7 +15,7 @@ export default function LikedPoems() {
     setLoading(true)
     const { data, error } = await supabase
       .from('likes')
-      .select('poem:poems(*, author:profiles(*))')
+      .select('poem:poems(*, author:profiles!poems_author_id_fkey(*))')
       .eq('user_id', session.user.id)
       .order('created_at', { ascending: false })
 

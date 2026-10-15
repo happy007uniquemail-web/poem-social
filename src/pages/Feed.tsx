@@ -25,7 +25,7 @@ export default function Feed() {
 
       let query = supabase
         .from('poems')
-        .select('*, author:profiles(*)')
+        .select('*, author:profiles!poems_author_id_fkey(*)')
         .eq('is_public', true)
         .range(from, to)
 

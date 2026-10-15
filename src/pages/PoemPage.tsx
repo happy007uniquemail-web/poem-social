@@ -28,7 +28,7 @@ export default function PoemPage() {
     setLoading(true)
     const { data, error } = await supabase
       .from('poems')
-      .select('*, author:profiles(*)')
+      .select('*, author:profiles!poems_author_id_fkey(*)')
       .eq('id', id)
       .maybeSingle()
 
